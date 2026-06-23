@@ -1,66 +1,93 @@
 [CmdletBinding()]
 param(
-  # G0.5 SO-101 expects English instructions. Keep this short and make sure
-  # the named object and destination are visible in the two camera views.
+  # G0.5 SO101 policy prompts should be concise English instructions.
   [string]$Task = "pick up the white block",
-  # Other zero-shot prompts, one at a time:
-  # [string]$Task = "put the red block into the blue bowl"
-  # [string]$Task = "move the wooden cube to the right"
-  # [string]$Task = "pick up the yellow screwdriver"
+  # Other prompts to try, one task per run:
+  # "put the red block into the blue bowl"
+  # "move the wooden cube to the right"
+  # "pick up the yellow screwdriver"
 
-  # Re-check these after USB replugging with: lerobot-find-cameras opencv
-  # The existing pi0.5 setup used fixed=2 and wrist=0.
+  # Physical devices on this laptop.  The model names are fixed by the client:
+  # camera 2 -> exterior, camera 0 -> wrist_right.
   [int]$FixedCameraIndex = 2,
   [int]$WristCameraIndex = 0,
 
-  # The fixed camera is cropped to a square before server resize. The wrist
-  # camera keeps its complete 640x480 frame and is stretched by the server.
-  [int]$FixedCropRightPx = 160,
+  # Only the exterior view is cropped.  For the 640-pixel source width, 91 px
+  # is round(640 / 7), so the outbound exterior frame is 549x480.  The wrist
+  # frame remains its whole 640x480 image.
+  [int]$FixedCropRightPx = 91,
   [int]$WristCropRightPx = 0,
 
-  # DirectShow/UVC exposure values. They are applied when each camera opens.
-  # -5 was the previous pi0.5 setting; reduce further (-6, -7...) if needed.
-  [double]$FixedExposure = -5.0,
-  [double]$WristExposure = -5.0,
+  # UVC/DirectShow settings, applied as each camera opens.  0.25 requests
+  # manual exposure mode for common Windows camera drivers; -6 is the driver's
+  # exposure value, not milliseconds.  Change these at the top of this command
+  # or pass values on the command line while using the dashboard to inspect it.
+  [double]$FixedAutoExposure = 0.25,
+  [double]$WristAutoExposure = 0.25,
+  [double]$FixedExposure = -6.0,
+  [double]$WristExposure = -6.0,
+  [int]$CameraFps = 30,
 
-  # Must equal the server --port and both sides of the SSH -L forwarding rule.
+  # Local endpoint of the SSH tunnel.  The remote server itself listens on
+  # 127.0.0.1:8765, so its tunnel must forward local port 8765 to it.
   [int]$PolicyPort = 8765,
 
-  # Per-command safety limit in degrees. Keep 2 for the first real motions.
-  # Do not increase this simply to make an incorrect policy move faster.
-  [double]$MaxStepDeg = 2.0,
+  # Official Galaxea SO100 client defaults.
+  [double]$ActionFps = 15.0,
+  [double]$MaxStepDeg = 10.0,
+  [int]$ExpectedActionSteps = 32,
+  [int]$MaxSteps = 0,       # 0 = run until Stop is pressed.
+  [int]$WarmupInfers = 0,  # Optional CUDA warmup; never moves the arm.
+  [double]$TimeoutS = 120.0,
 
-  # At 15 Hz, 20 steps is about 1.3 seconds of commanded motion.
-  # Raise only after dry run and short live motion have been verified.
-  [int]$MaxSteps = 2000,
+  # Temporary run-only calibration probes.  They affect both the state sent to
+  # G0.5 and the inverse transform back to the robot; they do not edit LeRobot
+  # calibration files or dataset files.
+  [double[]]$JointOffsets = @(0, 0, 0, 0, 0, 0),
+  [double[]]$JointScales = @(1, 1, 1, 1, 1, 1),
 
-  # Sends one observation for a server/CUDA warmup, but never executes it.
-  # Normally leave this at 1. Set 0 only to diagnose WebSocket connectivity.
-  [int]$WarmupInfers = 1,
+  # Dashboard retains all cards by default (0). Use a finite number to cap RAM
+  # on very long runs. -NoDashboard provides a compact terminal-only loop.
+  [switch]$NoDashboard,
+  [int]$DashboardFps = 15,
+  [int]$DashboardCameraFps = 10,
+  [int]$DashboardHistory = 0,
+  [string]$TimingLog = "",
+  [switch]$PrintServerResponses,
+  [string]$DumpObservationDir = "",
 
-  # Cold G0.5 inference may take tens of seconds; 120 s avoids a false timeout.
-  [double]$TimeoutS = 120,
-
-  # The script is dry-run by default. This explicit switch is required before
-  # any G0.5 target is allowed to reach COM24.
+  # Keep live hardware motion opt-in. -DisableMotion is accepted for older
+  # commands but is redundant because dry-run is already the default.
+  [switch]$EnableMotion,
   [switch]$DisableMotion,
+  [switch]$NoHome,
 
-  # Your OpenCV build has no GUI backend. Keep this off unless a GUI-enabled
-  # OpenCV build is installed; pass -Display to request camera windows.
-  [switch]$Display,
-
-  # Optional: save exactly what is sent to G0.5 plus its 256x256 server-input
-  # preview. Example: -DumpObservationDir .\outputs\g05_input_check
-  [string]$DumpObservationDir = ""
+  # The recovered OpenCV installation is headless, so this runner deliberately
+  # uses the Tk dashboard rather than trying to open cv2.imshow windows.
+  [switch]$Display
 )
 
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $Python = "C:\Users\19142\.conda\envs\lerobot\python.exe"
 $Client = Join-Path $PSScriptRoot "g05_so101_policy_client.py"
 
 if (-not (Test-Path -LiteralPath $Python)) {
   throw "LeRobot Python is missing: $Python"
+}
+if ($EnableMotion -and $DisableMotion) {
+  throw "-EnableMotion and -DisableMotion cannot be used together."
+}
+if ($Display) {
+  throw "This laptop's OpenCV build has no reliable GUI backend. Use the default dashboard instead of -Display."
+}
+if ($JointOffsets.Count -ne 6 -or $JointScales.Count -ne 6) {
+  throw "JointOffsets and JointScales must each contain exactly six values in SO101 order: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper."
+}
+if ($JointScales | Where-Object { $_ -le 0 }) {
+  throw "Every JointScales entry must be positive."
+}
+if ($FixedCropRightPx -lt 0 -or $FixedCropRightPx -ge 640 -or $WristCropRightPx -lt 0 -or $WristCropRightPx -ge 640) {
+  throw "Crop values must be in [0, 639]."
 }
 
 $ClientArgs = @(
@@ -74,49 +101,78 @@ $ClientArgs = @(
   "--wrist-camera", "$WristCameraIndex",
   "--fixed-crop-right-px", "$FixedCropRightPx",
   "--wrist-crop-right-px", "$WristCropRightPx",
-  "--camera-fps", "15",
+  "--camera-fps", "$CameraFps",
+  "--fixed-auto-exposure", "$FixedAutoExposure",
+  "--wrist-auto-exposure", "$WristAutoExposure",
   "--fixed-exposure", "$FixedExposure",
   "--wrist-exposure", "$WristExposure",
-  "--action-fps", "15",
+  "--action-fps", "$ActionFps",
   "--max-step-deg", "$MaxStepDeg",
+  "--expected-action-steps", "$ExpectedActionSteps",
   "--max-steps", "$MaxSteps",
   "--warmup-infers", "$WarmupInfers",
-  "--timeout-s", "$TimeoutS"
+  "--timeout-s", "$TimeoutS",
+  "--dashboard-fps", "$DashboardFps",
+  "--dashboard-camera-fps", "$DashboardCameraFps",
+  "--dashboard-history", "$DashboardHistory",
+  "--joint-offsets"
 )
+foreach ($value in $JointOffsets) {
+  $ClientArgs += "$value"
+}
+$ClientArgs += "--joint-scales"
+foreach ($value in $JointScales) {
+  $ClientArgs += "$value"
+}
 
+if (-not $NoDashboard) {
+  $ClientArgs += "--dashboard"
+}
+if ($TimingLog) {
+  $ClientArgs += @("--timing-log", $TimingLog)
+}
+if ($PrintServerResponses) {
+  $ClientArgs += "--print-server-responses"
+}
 if ($DumpObservationDir) {
   $ClientArgs += @("--dump-observation-dir", $DumpObservationDir)
 }
 
-if ($DisableMotion) {
-  $ClientArgs += "--dry-run"
-  Write-Warning "DRY RUN: no G0.5 action will be sent to COM24. Add -EnableMotion only after a successful dry run."
-} else {
+if ($EnableMotion) {
   Write-Warning "LIVE MOTION ENABLED. Clear the desk and keep the robot power switch within reach."
-}
-if (-not $Display) {
-  $ClientArgs += "--no-display"
+  if (-not $NoHome) {
+    $null = Read-Host "Workspace clear? Press Enter to connect and move to the official G0.5 training-mean home pose"
+    $ClientArgs += "--home-to-training-mean"
+  } else {
+    $null = Read-Host "Workspace clear? Press Enter to connect without automatic home motion"
+  }
+} else {
+  $ClientArgs += "--dry-run"
+  Write-Warning "DRY RUN: policy targets are displayed but never sent to COM24. Add -EnableMotion only after checking the dashboard."
 }
 
 Write-Host "G0.5 SO101 client"
-Write-Host "  task:    $Task"
-Write-Host "  policy:  ws://127.0.0.1:$PolicyPort"
-Write-Host "  cameras: exterior=$FixedCameraIndex, wrist_right=$WristCameraIndex"
-Write-Host "  image:   exterior crop right $FixedCropRightPx px -> $([int](640 - $FixedCropRightPx))x480; wrist crop right $WristCropRightPx px -> $([int](640 - $WristCropRightPx))x480"
-Write-Host "  exposure: exterior=$FixedExposure; wrist_right=$WristExposure"
-Write-Host "  timeout: $TimeoutS s; warmup: $WarmupInfers; max steps: $MaxSteps; max step: $MaxStepDeg deg"
-Write-Host "  display: $Display"
+Write-Host "  task:       $Task"
+Write-Host "  policy:     ws://127.0.0.1:$PolicyPort"
+Write-Host "  cameras:    exterior=$FixedCameraIndex, wrist_right=$WristCameraIndex"
+Write-Host "  outbound:   exterior $(640 - $FixedCropRightPx)x480 after right crop; wrist_right $(640 - $WristCropRightPx)x480 whole frame"
+Write-Host "  exposure:   exterior auto=$FixedAutoExposure value=$FixedExposure; wrist_right auto=$WristAutoExposure value=$WristExposure"
+Write-Host "  official:   action=$ActionFps Hz; server chunk=$ExpectedActionSteps; step cap=$MaxStepDeg deg"
+Write-Host "  dashboard:  $(-not $NoDashboard); UI=$DashboardFps Hz, camera=$DashboardCameraFps Hz, history=$DashboardHistory (0 means retain all cards)"
+Write-Host "  motion:     $EnableMotion; automatic home=$($EnableMotion -and -not $NoHome)"
 
 & $Python @ClientArgs
 exit $LASTEXITCODE
 
 
-# check camera
+# Dry run with live model-input dashboard:
+# .\scripts\g0.5\run_g05_so101_client.ps1 -Task "pick up the white block"
+#
+# Live run using official 15 Hz / 32 actions / 10 degree cap defaults:
+# .\scripts\g0.5\run_g05_so101_client.ps1 -Task "pick up the white block" -EnableMotion
+#
+# Inspect the exact outbound images and log each client timing event:
 # .\scripts\g0.5\run_g05_so101_client.ps1 `
 #   -Task "pick up the white block" `
-#   -DumpObservationDir .\outputs\g05_input_check
-
-# run
-# .\scripts\g0.5\run_g05_so101_client.ps1 `
-#    -Task "pick up the white block" `
-#    -EnableMotion
+#   -DumpObservationDir .\outputs\g05_input_check `
+#   -TimingLog .\outputs\g05_timing.jsonl

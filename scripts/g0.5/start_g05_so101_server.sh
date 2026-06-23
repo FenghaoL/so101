@@ -7,8 +7,10 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 CKPT=${1:?Usage: bash scripts/g0.5/start_g05_so101_server.sh /path/to/model_state_dict.pt}
 PORT=${POLICY_PORT:-8765}
 CUDA_DEVICE=${CUDA_VISIBLE_DEVICES:-0}
-TORCH_COMPILE=${G05_TORCH_COMPILE:-false}
-ACTION_STEPS=${G05_ACTION_STEPS:-1}
+# These are the Galaxea SO100 reference settings.  Set G05_TORCH_COMPILE=false
+# only when diagnosing a compile failure or making the very first safe run.
+TORCH_COMPILE=${G05_TORCH_COMPILE:-true}
+ACTION_STEPS=${G05_ACTION_STEPS:-32}
 
 test -x "$ROOT/.venv/bin/python"
 test -f "$CKPT"

@@ -1,0 +1,64 @@
+# @package _global_
+defaults:
+- override /model: g05
+- override /tokenizer: actioncodec
+- override /data: so101_fenghao
+- _self_
+
+# null intentionally means: compute fresh normalisation statistics from this
+# fine-tuning dataset.  Do not reuse the zero-shot checkpoint's SO100 stats.
+datastatics_path: null
+deploy_checkpoint:
+  enabled: true
+logger:
+  type: null
+  mode: disabled
+
+model:
+  pretrained_ckpt: ${oc.env:G05_SO101_PRETRAINED_CKPT}
+  use_pretrained_norm_stats: false
+  use_torch_compile: false
+  use_8bit_optimizer: false
+  batch_size: 2
+  num_workers: 4
+  max_epochs: 10
+  learning_rate: 4.0e-05
+  warmup_steps: 100
+  weight_decay: 0.01
+  processor:
+    num_output_cameras: 3
+    num_input_cameras: 3
+    camera_size_config:
+      exterior: [256, 256]
+      wrist_left: [256, 256]
+      wrist_right: [256, 256]
+    norm_default_mode: q01/q99
+    vlm_input_action_norm_default_mode: null
+    vlm_input_action_norm_exception_mode: null
+    tokenizer_params:
+      local_files_only: true
+  model_arch:
+    action_dim: 20
+    proprio_dim: 20
+    predict_cot: true
+    discrete_action: true
+    continuous_action: true
+    fm:
+      joint_training: false
+      fm_weight: 1.0
+      num_flow_samples: 8
+    ar:
+      ce_weight: 1.0
+
+tokenizer:
+  vq_config:
+    block_wise_autoregressive: false
+    dropout_noop_parts: true
+    model_arch:
+      codebook_size: 4096
+    num_residuals: 2
+    rule_based_key_patterns: [gripper]
+    rule_based_binarize_threshold: 0.0
+    use_group_markers: true
+    group_order_shuffle: false
+    absent_key_fill_value: -100.0
