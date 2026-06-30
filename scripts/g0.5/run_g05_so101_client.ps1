@@ -12,10 +12,10 @@ param(
   [int]$FixedCameraIndex = 2,
   [int]$WristCameraIndex = 0,
 
-  # Only the exterior view is cropped.  For the 640-pixel source width, 91 px
-  # is round(640 / 7), so the outbound exterior frame is 549x480.  The wrist
+  # Only the exterior view is cropped.  Removing its rightmost 160 pixels
+  # converts native 640x480 into the square 480x480 G0.5 image. The wrist
   # frame remains its whole 640x480 image.
-  [int]$FixedCropRightPx = 91,
+  [int]$FixedCropRightPx = 160,
   [int]$WristCropRightPx = 0,
 
   # UVC/DirectShow settings, applied as each camera opens.  0.25 requests
@@ -53,7 +53,10 @@ param(
   [int]$DashboardCameraFps = 10,
   [int]$DashboardHistory = 0,
   [string]$TimingLog = "",
-  [switch]$PrintServerResponses,
+  # Print every decoded inbound WebSocket packet verbatim: handshake, reset,
+  # optional warmup, and every policy/cache response. Set to $false only when
+  # the terminal volume is undesirable.
+  [bool]$PrintServerResponses = $true,
   [string]$DumpObservationDir = "",
 
   # Keep live hardware motion opt-in. -DisableMotion is accepted for older
@@ -160,6 +163,7 @@ Write-Host "  exposure:   exterior auto=$FixedAutoExposure value=$FixedExposure;
 Write-Host "  official:   action=$ActionFps Hz; server chunk=$ExpectedActionSteps; step cap=$MaxStepDeg deg"
 Write-Host "  dashboard:  $(-not $NoDashboard); UI=$DashboardFps Hz, camera=$DashboardCameraFps Hz, history=$DashboardHistory (0 means retain all cards)"
 Write-Host "  motion:     $EnableMotion; automatic home=$($EnableMotion -and -not $NoHome)"
+Write-Host "  server packets: print decoded full inbound packets = $PrintServerResponses"
 
 & $Python @ClientArgs
 exit $LASTEXITCODE

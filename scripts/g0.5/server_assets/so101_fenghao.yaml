@@ -7,10 +7,9 @@ obs_size: 1
 val_set_proportion: 0.05
 is_training_set: true
 
-# The recording script writes raw full-size videos.  The adapter maps
-# observation.images.fixed -> exterior and observation.images.wrist ->
-# wrist_right, pads wrist_left with black, and crops exterior 640x480 to
-# 549x480 by removing its rightmost round(640 / 7) = 91 pixels.
+# The recorder captures 640x480 then removes the fixed camera's rightmost 160
+# pixels before storage and visualization. Thus fixed/exterior is already
+# 480x480 here and the training adapter must not crop it a second time.
 embodiment_datasets:
   so101_fenghao:
     type: g05.data.so101_fenghao_dataset.SO101FenghaoLerobotDatasetV3
@@ -18,7 +17,7 @@ embodiment_datasets:
     lerobot_ds_version: '3.0'
     load_images: true
     random_drop_camera: false
-    exterior_crop_right_px: 91
+    exterior_crop_right_px: 0
     shape_meta:
       action:
       - key: right_arm
@@ -39,8 +38,8 @@ embodiment_datasets:
         camera_type: exterior
         lerobot_key: __so101_fixed__
         start_index: 0
-        raw_shape: [3, 480, 640]
-        shape: [3, 480, 549]
+        raw_shape: [3, 480, 480]
+        shape: [3, 480, 480]
         time_offset: 0
       - key: wrist_left
         camera_type: wrist_left
@@ -83,8 +82,8 @@ processors:
         camera_type: exterior
         lerobot_key: __so101_fixed__
         start_index: 0
-        raw_shape: [3, 480, 640]
-        shape: [3, 480, 549]
+        raw_shape: [3, 480, 480]
+        shape: [3, 480, 480]
         time_offset: 0
       - key: wrist_left
         camera_type: wrist_left

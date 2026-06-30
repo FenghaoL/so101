@@ -96,6 +96,20 @@ def unpackb(value: bytes) -> Any:
     return msgpack.unpackb(value, object_hook=_msgpack_hook)
 
 
+def format_full_server_packet(packet: Any) -> str:
+    """Return the complete decoded packet text without NumPy array elision."""
+    with np.printoptions(threshold=np.inf, linewidth=240):
+        return repr(packet)
+
+
+def print_full_server_packet(label: str, packet: Any) -> None:
+    """Print every field of one inbound packet; intentionally no field filtering."""
+    print(
+        f"\n[G0.5 complete decoded server packet | {label}]\n{format_full_server_packet(packet)}",
+        flush=True,
+    )
+
+
 async def websocket_connect(uri: str):
     import websockets
 
@@ -407,7 +421,7 @@ class PolicyWorker(threading.Thread):
                 detail=f"server chunk={advertised}; control={self.args.action_fps:g} Hz",
             )
             if self.args.print_server_responses:
-                print("\n[G0.5 raw server response | handshake]\n", repr(handshake), flush=True)
+                print_full_server_packet("handshake", handshake)
 
             if not self.args.dashboard and self.args.task:
                 self.runtime.command_queue.put(("start", self.args.task))
@@ -490,6 +504,8 @@ class PolicyWorker(threading.Thread):
             return
         await self.websocket.send(packb({"__reset__": True}))
         response = unpackb(await asyncio.wait_for(self.websocket.recv(), timeout=self.args.timeout_s))
+        if self.args.print_server_responses:
+            print_full_server_packet("reset-cache", response)
         if not isinstance(response, dict) or not response.get("__reset__"):
             raise RuntimeError(f"unexpected reset-cache response: {response!r}")
 
@@ -509,6 +525,8 @@ class PolicyWorker(threading.Thread):
             t0 = time.monotonic()
             await self.websocket.send(packb(request))
             response = await self._receive_response_with_live_preview()
+            if self.args.print_server_responses:
+                print_full_server_packet(f"warmup {index + 1}/{self.args.warmup_infers}", response)
             if not isinstance(response, dict) or "error" in response:
                 raise RuntimeError(f"warmup response failed: {response!r}")
             self.runtime.update(
@@ -625,7 +643,7 @@ class PolicyWorker(threading.Thread):
             raise RuntimeError(f"invalid policy response: {response!r}")
         if self.args.print_server_responses:
             label = "recompute" if recompute else "cache"
-            print(f"\n[G0.5 raw server response | {label}]\n{response!r}\ncot_text repr: {response.get('cot_text', '<field absent>')!r}", flush=True)
+            print_full_server_packet(label, response)
         if "error" in response:
             raise RuntimeError(f"server error: {response['error']}")
         action = response.get("action")
@@ -974,8 +992,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wrist-camera", type=int, default=0)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
-    # 91 is round(640 / 7): retain the left 549 columns of a 640x480 exterior frame.
-    parser.add_argument("--fixed-crop-right-px", type=int, default=91)
+    # Retain the left 480 columns of the native 640x480 exterior frame.
+    parser.add_argument("--fixed-crop-right-px", type=int, default=160)
     parser.add_argument("--wrist-crop-right-px", type=int, default=0)
     parser.add_argument("--camera-fps", type=int, default=30)
     parser.add_argument("--fixed-auto-exposure", type=float, default=0.25)

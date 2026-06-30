@@ -2,9 +2,10 @@
 
 ## The three representations
 
-1. `record_g05_so101.ps1` records a **raw LeRobot v3** dataset in the local,
-   calibrated degree frame.  It keeps original `640x480` videos and snapshots
-   the follower/leader calibration JSON files next to each run.
+1. `record_g05_so101.ps1` records a LeRobot v3 dataset in the local,
+   calibrated degree frame.  It writes the fixed camera as a cropped square
+   `480x480` video and the wrist camera as `640x480`, then snapshots the
+   follower/leader calibration JSON files next to each run.
 2. `prepare_g05_so101_dataset.py` creates a new sibling dataset; it never
    edits the raw recording.  It maps both `observation.state` and `action` to
    G0.5's SO100 model frame:
@@ -13,9 +14,9 @@
    q_model = [1,-1,1,1,1,1] * q_arm + [0,90,90,0,0,0]
    ```
 
-3. The GPU training adapter crops only the exterior image right by 91 pixels
-   (`round(640/7)`) while loading.  It maps `fixed -> exterior`, `wrist -> wrist_right`, and
-   pads `wrist_left` black.  This exactly matches the live client.
+3. The GPU training adapter maps `fixed -> exterior`, `wrist -> wrist_right`,
+   and pads `wrist_left` black. It preserves the recorded square fixed videos
+   as-is. This exactly matches the live client.
 
 Do not give raw data directly to G0.5 fine-tuning, and never send prepared
 model-frame angles directly to physical motors.

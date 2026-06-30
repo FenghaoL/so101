@@ -2,9 +2,9 @@
 
 Install this file in the GalaxeaVLA server checkout at
 ``src/g05/data/so101_fenghao_dataset.py``.  It uses the upstream canonical
-SO100/SO101 mapper for the raw LeRobot keys ``fixed`` and ``wrist`` and adds
-exactly one local rule: crop the rightmost 91 pixels (round(640 / 7)) from
-exterior frames.
+SO100/SO101 mapper for the LeRobot keys ``fixed`` and ``wrist``. The recorder
+already stores ``fixed`` as the 480x480 square G0.5 exterior image, so this
+adapter deliberately does not crop it again.
 The wrist image is deliberately never cropped.
 """
 
@@ -20,7 +20,7 @@ from g05.data.so100_canonical_dataset import SO100CanonicalLerobotDatasetV3
 class SO101FenghaoLerobotDatasetV3(SO100CanonicalLerobotDatasetV3):
     """Map fixed->exterior and wrist->wrist_right with exterior right crop."""
 
-    def __init__(self, *args: Any, exterior_crop_right_px: int = 91, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, exterior_crop_right_px: int = 0, **kwargs: Any) -> None:
         if exterior_crop_right_px < 0:
             raise ValueError("exterior_crop_right_px must be non-negative")
         self.exterior_crop_right_px = int(exterior_crop_right_px)

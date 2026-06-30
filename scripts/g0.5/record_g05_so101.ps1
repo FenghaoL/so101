@@ -34,10 +34,9 @@ param(
   [string]$LeaderCalibrationDir = "$env:USERPROFILE\.cache\huggingface\lerobot\calibration\teleoperators\so101_leader",
 
   # This is deliberately the exact live-client image contract: remove the
-  # rightmost round(640 / 7) = 91 pixels, retaining a 549x480 exterior frame.
-  # The raw dataset stays 640x480; the manifest records this contract and the
-  # G0.5 training adapter applies the same crop while loading it.
-  [int]$FixedCropRightPx = 91,
+  # rightmost 160 pixels and store the fixed-camera video as a square 480x480
+  # image. The recorder also publishes this square image to its visualization.
+  [int]$FixedCropRightPx = 160,
   [int]$WristCropRightPx = 0,
 
   [switch]$DisplayData,
@@ -88,14 +87,18 @@ if (Test-Path -LiteralPath $datasetRoot) {
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $datasetRoot) | Out-Null
 
 $datasetRepo = "$DatasetNamespace/${DatasetGroup}_${TaskFolder}_${RunName}" -replace "[^A-Za-z0-9_./-]", "_"
-# LeRobot 0.5.1 accepts these standard camera fields.  The camera-control
-# wrapper applies auto_exposure/exposure directly to these same handles before
-# their frame threads start, because current LeRobot no longer has those two
-# configuration fields.
+# LeRobot captures both USB cameras at their supported native 640x480 mode.
+# The wrapper applies UVC controls and then crops only the fixed camera before
+# LeRobot sees each frame, so the saved fixed video and its visualization are
+# 480x480 while the wrist video remains 640x480.
 $cameraConfig = "{ fixed: {type: opencv, index_or_path: $FixedCameraIndex, width: 640, height: 480, fps: $CameraFps}, wrist: {type: opencv, index_or_path: $WristCameraIndex, width: 640, height: 480, fps: $CameraFps}}"
 $cameraControls = [ordered]@{
   "$FixedCameraIndex" = [ordered]@{ auto_exposure = $FixedAutoExposure; exposure = $FixedExposure }
   "$WristCameraIndex" = [ordered]@{ auto_exposure = $WristAutoExposure; exposure = $WristExposure }
+}
+$cameraCrops = [ordered]@{
+  "$FixedCameraIndex" = $FixedCropRightPx
+  "$WristCameraIndex" = $WristCropRightPx
 }
 
 # Both arms must use degrees. Setting it on only the follower would make the
@@ -142,7 +145,10 @@ Write-Host "If LeRobot reports a calibration mismatch, press ENTER only to write
 
 $oldControlValue = $env:G05_RECORD_CAMERA_CONTROLS
 $hadOldControlValue = Test-Path Env:G05_RECORD_CAMERA_CONTROLS
+$oldCropValue = $env:G05_RECORD_CAMERA_CROPS
+$hadOldCropValue = Test-Path Env:G05_RECORD_CAMERA_CROPS
 $env:G05_RECORD_CAMERA_CONTROLS = $cameraControls | ConvertTo-Json -Compress -Depth 4
+$env:G05_RECORD_CAMERA_CROPS = $cameraCrops | ConvertTo-Json -Compress -Depth 4
 $recordExit = $null
 try {
   & $Python $recordWrapper @recordArgs
@@ -152,6 +158,11 @@ try {
     $env:G05_RECORD_CAMERA_CONTROLS = $oldControlValue
   } else {
     Remove-Item Env:G05_RECORD_CAMERA_CONTROLS -ErrorAction SilentlyContinue
+  }
+  if ($hadOldCropValue) {
+    $env:G05_RECORD_CAMERA_CROPS = $oldCropValue
+  } else {
+    Remove-Item Env:G05_RECORD_CAMERA_CROPS -ErrorAction SilentlyContinue
   }
 }
 if ($recordExit -ne 0) {
@@ -179,6 +190,7 @@ $contract = [ordered]@{
   task = $Task
   dataset_fps = $DatasetFps
   camera_capture_fps = $CameraFps
+  stored_camera_shapes = [ordered]@{ fixed = @(480, (640 - $FixedCropRightPx), 3); wrist = @(480, (640 - $WristCropRightPx), 3) }
   raw_camera_fields = [ordered]@{ fixed = "observation.images.fixed"; wrist = "observation.images.wrist" }
   live_model_slots = [ordered]@{ fixed = "exterior"; wrist = "wrist_right"; wrist_left = "zero_padded" }
   live_image_contract = [ordered]@{ fixed_crop_right_px = $FixedCropRightPx; wrist_crop_right_px = $WristCropRightPx }

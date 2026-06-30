@@ -4,9 +4,8 @@ This tool never modifies the source dataset.  It creates a sibling dataset with
 the same videos and metadata, transforms only the action/state parquet columns
 into the G0.5 SO100 training frame, and writes an auditable manifest.
 
-The fixed-camera crop is deliberately not baked into videos: the accompanying
-G0.5 dataset adapter crops it at training load time.  Keeping raw videos intact
-makes future camera-contract changes reversible.
+Recordings store the fixed-camera right crop as a square 480x480 video,
+exactly matching live G0.5 input geometry.
 """
 
 from __future__ import annotations
@@ -89,17 +88,21 @@ def validate_source(
         if names is not None and list(names) != JOINT_NAMES:
             die(f"{key} joint order differs from G0.5 SO101 order: {names!r}")
 
-    fixed = get_feature(info, "observation.images.fixed")
-    wrist = get_feature(info, "observation.images.wrist")
-    for name, feature in (("fixed", fixed), ("wrist", wrist)):
-        shape = list(feature.get("shape", []))
-        if shape != [480, 640, 3]:
-            die(f"observation.images.{name} must be 480x640x3, got {shape!r}")
-
     if not 0 <= fixed_crop_right_px < 640:
         die("fixed crop-right pixels must be in [0, 639]")
     if not 0 <= wrist_crop_right_px < 640:
         die("wrist crop-right pixels must be in [0, 639]")
+
+    fixed = get_feature(info, "observation.images.fixed")
+    wrist = get_feature(info, "observation.images.wrist")
+    fixed_shape = list(fixed.get("shape", []))
+    expected_fixed_shape = [480, 640 - fixed_crop_right_px, 3]
+    if fixed_shape != expected_fixed_shape:
+        die(f"observation.images.fixed must be {expected_fixed_shape!r}, got {fixed_shape!r}")
+    wrist_shape = list(wrist.get("shape", []))
+    expected_wrist_shape = [480, 640 - wrist_crop_right_px, 3]
+    if wrist_shape != expected_wrist_shape:
+        die(f"observation.images.wrist must be {expected_wrist_shape!r}, got {wrist_shape!r}")
 
     parquet_files = sorted((root / "data").glob("**/*.parquet"))
     if not parquet_files:
@@ -129,6 +132,35 @@ def link_or_copy(source: Path, destination: Path) -> str:
     except OSError:
         shutil.copy2(source, destination)
         return "copy"
+
+
+def write_prepared_rl_labels(source: Path, destination: Path) -> dict[str, object] | None:
+    source_labels = source / "rl_rollout_labels.jsonl"
+    if not source_labels.exists():
+        return None
+
+    output = destination / "rl_rollout_labels_prepared.jsonl"
+    rows = 0
+    with source_labels.open("r", encoding="utf-8") as src, output.open("w", encoding="utf-8") as dst:
+        for line in src:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            row = json.loads(stripped)
+            row["raw_dataset_dir"] = row.get("dataset_dir") or str(source)
+            row["prepared_dataset_dir"] = str(destination)
+            row["dataset_dir"] = str(destination)
+            row["prepared_coordinate_frame"] = "g05_so100_model_frame"
+            row["prepared_from"] = str(source)
+            dst.write(json.dumps(row, ensure_ascii=False) + "\n")
+            rows += 1
+
+    return {
+        "source": str(source_labels),
+        "prepared_output": str(output),
+        "rows": rows,
+        "note": "original rl_rollout_labels.jsonl is copied/hardlinked unchanged; use this prepared file for pairs after coordinate conversion",
+    }
 
 
 def prepare(source: Path, destination: Path, *, fixed_crop_right_px: int, wrist_crop_right_px: int) -> None:
@@ -166,6 +198,8 @@ def prepare(source: Path, destination: Path, *, fixed_crop_right_px: int, wrist_
         )
         raise
 
+    rl_sidecar = write_prepared_rl_labels(source, destination)
+
     manifest = {
         "format": "g05_so101_prepared_dataset/v1",
         "source_dataset": str(source),
@@ -188,13 +222,14 @@ def prepare(source: Path, destination: Path, *, fixed_crop_right_px: int, wrist_
             },
             "fixed_crop_right_px": fixed_crop_right_px,
             "wrist_crop_right_px": wrist_crop_right_px,
-            "crop_implementation": "training adapter; source and prepared videos remain unmodified",
+            "crop_implementation": "recording wrapper; source and prepared fixed-camera videos are already cropped",
         },
         "files": {
             "transformed_episode_parquet": transformed_parquet,
             "hardlinked_unchanged_files": linked_files,
             "copied_unchanged_files": copied_files,
         },
+        "rl_sidecar": rl_sidecar,
     }
     (destination / "g05_preparation_manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
@@ -206,8 +241,8 @@ def main() -> int:
     parser.add_argument("--source", required=True, type=Path, help="Raw LeRobot v3 dataset directory")
     parser.add_argument("--destination", type=Path, help="New G0.5 model-frame dataset directory")
     parser.add_argument("--expect-fps", type=int, default=15)
-    # round(640 / 7): the fine-tuning exterior image retains 549 of 640 columns.
-    parser.add_argument("--fixed-crop-right-px", type=int, default=91)
+    # The recorder removes 160 native columns, retaining a square 480x480 fixed image.
+    parser.add_argument("--fixed-crop-right-px", type=int, default=160)
     parser.add_argument("--wrist-crop-right-px", type=int, default=0)
     parser.add_argument("--verify-only", action="store_true", help="Validate source schema without writing files")
     parser.add_argument("--dry-run", action="store_true", help="Print the planned conversion without writing files")
@@ -224,7 +259,8 @@ def main() -> int:
     print(f"  source:         {source}")
     print(f"  LeRobot format: {info['codebase_version']}")
     print(f"  fps:            {info['fps']}")
-    print(f"  episode files:  {len(parquet_files)}")
+    print(f"  episodes:       {info.get('total_episodes', 'unknown')}")
+    print(f"  data shards:    {len(parquet_files)} (LeRobot v3 shards, not episode count)")
     print("  fields:         action/state=[6], images=fixed+wrist")
     print(
         "  G0.5 frame:     q_model = [1,-1,1,1,1,1] * q_arm + [0,90,90,0,0,0]"

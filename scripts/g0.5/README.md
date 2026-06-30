@@ -56,7 +56,7 @@ deliberately makes the arm limp so it can be repositioned by hand.
 
 - `ActionFps=15`; `ExpectedActionSteps=32`; `MaxStepDeg=10`.
 - Camera `2` is model slot `exterior`; camera `0` is `wrist_right`.
-- Exterior removes its rightmost 91 pixels (`round(640/7)`): `640x480 -> 549x480`.
+- Exterior removes its rightmost 160 pixels: `640x480 -> 480x480`.
 - Wrist is uncropped: `640x480`; both are then independently resized by the
   server to `256x256`.
 - Model state/action use G0.5's right-arm 6-D coordinate transform:
