@@ -18,6 +18,7 @@ import contextlib
 import json
 import logging
 import queue
+import re
 import shutil
 import sys
 import threading
@@ -47,19 +48,11 @@ JOINT_COUNT = len(MOTORS)
 SIGNS = np.asarray([1, -1, 1, 1, 1, 1], dtype=np.float32)
 OFFSETS = np.asarray([0, 90, 90, 0, 0, 0], dtype=np.float32)
 HOME_ARM = np.asarray([3.1, -34.3, 31.5, 55.9, -12.3, 13.4], dtype=np.float32)
-
-# These are deliberately small pose offsets around the G0.5 SO101 training-mean
-# pose.  They label robot start-state buckets; they do not encode object pose.
-INIT_BUCKETS: dict[str, list[float]] = {
-    "A_mean_home": [0, 0, 0, 0, 0, 0],
-    "B_pan_left": [-6, 0, 2, 0, 0, 0],
-    "C_pan_right": [6, 0, 2, 0, 0, 0],
-    "D_reach_forward": [0, -5, 7, -3, 0, 0],
-    "E_reach_back": [0, 5, -5, 3, 0, 0],
-    "F_failure_edge": [7, -7, 7, -5, 0, 0],
-    "G_low_wrist": [0, -4, 5, -8, 0, 0],
-    "H_rotated_wrist": [0, 0, 2, 0, 12, 0],
-}
+DEFAULT_BUCKET_LABEL = "bucket_001"
+DEFAULT_BUCKET_RANDOM_DEG = 3.0
+# Randomization is applied around HOME_ARM when a new object-placement bucket is
+# first created.  The gripper is intentionally not randomized.
+BUCKET_NOISE_WEIGHTS = np.asarray([1.0, 1.0, 1.0, 1.0, 0.7, 0.0], dtype=np.float32)
 
 
 def _msgpack_default(value: Any) -> Any:
@@ -158,6 +151,34 @@ def append_jsonl(path: Path | str | None, record: dict[str, Any]) -> None:
         handle.write(json.dumps(jsonable(record), ensure_ascii=False) + "\n")
 
 
+def write_json(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(jsonable(record), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        LOGGER.warning("Could not read JSON file; using default: %s", path, exc_info=True)
+        return default
+
+
+def safe_bucket_name(label: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", label.strip())
+    safe = safe.strip("._-")
+    return (safe or DEFAULT_BUCKET_LABEL)[:80]
+
+
+def save_rgb_png(path: Path, rgb: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(path), cv2.cvtColor(np.asarray(rgb), cv2.COLOR_RGB2BGR))
+
+
 def get_state(observation: dict[str, Any]) -> np.ndarray:
     return np.asarray([observation[f"{motor}.pos"] for motor in MOTORS], dtype=np.float32)
 
@@ -180,8 +201,11 @@ def clip_target(target: np.ndarray, current: np.ndarray, max_step_deg: float) ->
     return current + delta * (max_step_deg / largest)
 
 
-def bucket_pose(bucket: str) -> np.ndarray:
-    return HOME_ARM + np.asarray(INIT_BUCKETS.get(bucket, [0, 0, 0, 0, 0, 0]), dtype=np.float32)
+def generate_bucket_arm_pose(random_deg: float) -> tuple[np.ndarray, np.ndarray]:
+    random_deg = max(0.0, float(random_deg))
+    noise = np.random.default_rng().uniform(-random_deg, random_deg, size=JOINT_COUNT).astype(np.float32)
+    noise *= BUCKET_NOISE_WEIGHTS
+    return HOME_ARM + noise, noise
 
 
 def vector_to_action(vector: np.ndarray) -> dict[str, float]:
@@ -298,6 +322,8 @@ def build_follower(args: argparse.Namespace):
 
 
 def build_leader(args: argparse.Namespace):
+    if args.no_leader:
+        return None
     from lerobot.teleoperators.so_leader.config_so_leader import SO101LeaderConfig
     from lerobot.teleoperators.so_leader.so_leader import SO101Leader
 
@@ -353,6 +379,10 @@ class EpisodeSession:
     uid: str
     task: str
     init_config_id: str
+    bucket_label: str
+    bucket_random_value_deg: float
+    arm_init_pose_deg: list[float]
+    bucket_record_path: str
     source: str
     failure_mode: str = ""
     notes: str = ""
@@ -394,8 +424,9 @@ class RuntimeState:
     torque_enabled: bool = True
     control_mode: str = "policy"
     task: str = "Pick up the white block."
-    init_config_id: str = "A_mean_home"
+    init_config_id: str = DEFAULT_BUCKET_LABEL
     source: str = "autonomous"
+    bucket_info: dict[str, Any] = field(default_factory=dict)
     episode_index: int | None = None
     episode_uid: str | None = None
     episode_frame_count: int = 0
@@ -409,6 +440,9 @@ class RuntimeState:
     live_image_seq: int = 0
     last_observation_sent_at: float | None = None
     last_timing: dict[str, Any] = field(default_factory=dict)
+    saving_episode_index: int | None = None
+    saving_started_at: float | None = None
+    saving_detail: str = ""
     chunk_step: int = 0
     action_steps: int = 0
     cards: deque[dict[str, Any]] = field(default_factory=deque)
@@ -443,6 +477,7 @@ class RuntimeState:
                 "task": self.task,
                 "init_config_id": self.init_config_id,
                 "source": self.source,
+                "bucket_info": dict(self.bucket_info),
                 "episode_index": self.episode_index,
                 "episode_uid": self.episode_uid,
                 "episode_frame_count": self.episode_frame_count,
@@ -456,6 +491,9 @@ class RuntimeState:
                 "live_image_seq": self.live_image_seq,
                 "last_observation_sent_at": self.last_observation_sent_at,
                 "last_timing": dict(self.last_timing),
+                "saving_episode_index": self.saving_episode_index,
+                "saving_started_at": self.saving_started_at,
+                "saving_detail": self.saving_detail,
                 "chunk_step": self.chunk_step,
                 "action_steps": self.action_steps,
                 "cards": list(self.cards),
@@ -489,6 +527,7 @@ class RLCollectorWorker(threading.Thread):
         self.robot_action_processor = None
         self.robot_observation_processor = None
         self._finalized = False
+        self.bucket_index: dict[str, Any] = {}
 
     def run(self) -> None:
         try:
@@ -522,7 +561,7 @@ class RLCollectorWorker(threading.Thread):
         self._prepare_output_tree()
         apply_camera_patch(self.args)
 
-        self.runtime.update(status="Creating SO101 follower, leader, and dataset writer...")
+        self.runtime.update(status="Creating SO101 follower, optional leader, and dataset writer...")
         self.robot = build_follower(self.args)
         self.leader = build_leader(self.args)
         (
@@ -540,9 +579,13 @@ class RLCollectorWorker(threading.Thread):
         self.video_manager = VideoEncodingManager(self.dataset)
         self.video_manager.__enter__()
 
-        self.runtime.update(status="Connecting follower, cameras, and leader...")
+        hardware_status = "Connecting follower and cameras..."
+        if self.leader is not None:
+            hardware_status = "Connecting follower, cameras, and leader..."
+        self.runtime.update(status=hardware_status)
         self.robot.connect()
-        self.leader.connect()
+        if self.leader is not None:
+            self.leader.connect()
         self.runtime.update(connected=True, status="Hardware connected; connecting policy server...")
 
         uri = f"ws://{self.args.host}:{self.args.port}"
@@ -582,9 +625,13 @@ class RLCollectorWorker(threading.Thread):
         if root.exists():
             raise RuntimeError(f"Refusing to overwrite existing dataset root: {root}")
         root.parent.mkdir(parents=True, exist_ok=True)
+        bucket_root = Path(self.args.bucket_root)
+        bucket_root.mkdir(parents=True, exist_ok=True)
         self.args.event_log = str(root / "rl_events.jsonl")
         self.args.label_log = str(root / "rl_rollout_labels.jsonl")
         self.args.timing_log = str(root / "rl_timing.jsonl")
+        self.args.bucket_index_path = str(bucket_root / "buckets_index.json")
+        self.bucket_index = self._load_bucket_index()
 
     def _write_collection_contract(self) -> None:
         context_dir = Path(self.args.dataset_root) / "recording_context"
@@ -617,21 +664,215 @@ class RLCollectorWorker(threading.Thread):
                 "policy": "execute G0.5 right_arm actions",
                 "teleop": "relative leader takeover; follower target = follower_anchor + leader_delta",
             },
-            "init_buckets": {
-                name: {"home_offset_deg": offset, "nominal_pose_deg": bucket_pose(name).tolist()}
-                for name, offset in INIT_BUCKETS.items()
+            "bucket_contract": {
+                "meaning": "bucket label describes object/block placement, not a fixed arm pose class",
+                "bucket_root": self.args.bucket_root,
+                "new_bucket_pose_rule": "arm_init_pose_deg = HOME_ARM + uniform(-random_deg, random_deg) * BUCKET_NOISE_WEIGHTS",
+                "home_arm_deg": HOME_ARM.tolist(),
+                "noise_weights": BUCKET_NOISE_WEIGHTS.tolist(),
+                "default_random_deg": self.args.bucket_random_deg,
+                "start_behavior": "on Start episode, move to saved bucket arm_init_pose, count down, then record",
             },
         }
         (context_dir / "g05_rl_collection_contract.json").write_text(
             json.dumps(contract, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
 
+    def _load_bucket_index(self) -> dict[str, Any]:
+        path = Path(self.args.bucket_index_path)
+        index = read_json(
+            path,
+            {
+                "format": "g05_so101_rl_bucket_index/v1",
+                "created_at": now_iso(),
+                "updated_at": now_iso(),
+                "bucket_root": str(Path(self.args.bucket_root).resolve()),
+                "buckets": {},
+            },
+        )
+        index.setdefault("buckets", {})
+        return index
+
+    def _save_bucket_index(self) -> None:
+        self.bucket_index["updated_at"] = now_iso()
+        self.bucket_index["bucket_root"] = str(Path(self.args.bucket_root).resolve())
+        write_json(Path(self.args.bucket_index_path), self.bucket_index)
+
+    def _bucket_dir_for_label(self, label: str) -> Path:
+        buckets = self.bucket_index.setdefault("buckets", {})
+        if label in buckets and buckets[label].get("bucket_dir"):
+            return Path(self.args.bucket_root) / str(buckets[label]["bucket_dir"])
+
+        base = safe_bucket_name(label)
+        relative = Path("buckets") / base
+        candidate = Path(self.args.bucket_root) / relative
+        suffix = 2
+        while candidate.exists() and (candidate / "bucket.json").exists():
+            existing = read_json(candidate / "bucket.json", {})
+            if existing.get("label") == label:
+                break
+            relative = Path("buckets") / f"{base}_{suffix}"
+            candidate = Path(self.args.bucket_root) / relative
+            suffix += 1
+        return candidate
+
+    def _load_bucket_record(self, label: str) -> dict[str, Any] | None:
+        entry = self.bucket_index.setdefault("buckets", {}).get(label)
+        if not entry:
+            return None
+        record_path = Path(self.args.bucket_root) / str(entry.get("bucket_dir", "")) / "bucket.json"
+        if not record_path.exists():
+            return None
+        record = read_json(record_path, {})
+        return record or None
+
+    def _write_bucket_record(self, record: dict[str, Any]) -> None:
+        label = str(record["label"])
+        bucket_dir = Path(record["bucket_dir"])
+        record_path = Path(self.args.bucket_root) / bucket_dir / "bucket.json"
+        record["updated_at"] = now_iso()
+        write_json(record_path, record)
+        counts = record.setdefault("counts", {})
+        self.bucket_index.setdefault("buckets", {})[label] = {
+            "bucket_dir": str(bucket_dir).replace("\\", "/"),
+            "record": str((bucket_dir / "bucket.json")).replace("\\", "/"),
+            "success": int(counts.get("success", 0)),
+            "failure": int(counts.get("failure", 0)),
+            "total_saved": int(counts.get("total_saved", 0)),
+            "arm_init_pose_deg": record.get("arm_init_pose_deg"),
+            "random_value_deg": record.get("random_value_deg"),
+            "updated_at": record["updated_at"],
+        }
+        self._save_bucket_index()
+
+    def _new_bucket_record(self, label: str, random_deg: float) -> dict[str, Any]:
+        bucket_dir_abs = self._bucket_dir_for_label(label)
+        relative_dir = bucket_dir_abs.relative_to(Path(self.args.bucket_root))
+        pose, noise = generate_bucket_arm_pose(random_deg)
+        return {
+            "format": "g05_so101_rl_bucket/v1",
+            "label": label,
+            "bucket_dir": str(relative_dir).replace("\\", "/"),
+            "created_at": now_iso(),
+            "updated_at": now_iso(),
+            "random_value_deg": float(max(0.0, random_deg)),
+            "noise_deg": noise.tolist(),
+            "home_arm_deg": HOME_ARM.tolist(),
+            "arm_init_pose_deg": pose.tolist(),
+            "counts": {"success": 0, "failure": 0, "total_saved": 0},
+            "camera_snapshots": {},
+            "notes": "Bucket label represents object/block placement. This directory stores metadata and reference images only, not episode data.",
+        }
+
+    def _bucket_runtime_info(self, record: dict[str, Any]) -> dict[str, Any]:
+        counts = record.get("counts", {})
+        return {
+            "label": record.get("label"),
+            "random_value_deg": record.get("random_value_deg"),
+            "arm_init_pose_deg": record.get("arm_init_pose_deg"),
+            "success": int(counts.get("success", 0)),
+            "failure": int(counts.get("failure", 0)),
+            "total_saved": int(counts.get("total_saved", 0)),
+            "record_path": str(Path(self.args.bucket_root) / str(record.get("bucket_dir", "")) / "bucket.json"),
+        }
+
+    def _capture_bucket_snapshots(self, record: dict[str, Any], observation: dict[str, Any], *, overwrite: bool) -> dict[str, Any]:
+        bucket_dir = Path(self.args.bucket_root) / str(record["bucket_dir"])
+        snapshots = dict(record.get("camera_snapshots") or {})
+        if snapshots and not overwrite:
+            return record
+        images = build_model_images(observation)
+        outbound = {key: chw_to_rgb(value) for key, value in images.items() if key != "wrist_left"}
+        previews = {key: server_preview(value) for key, value in images.items() if key != "wrist_left"}
+        files: dict[str, str] = {}
+        for key, rgb in outbound.items():
+            path = bucket_dir / f"{key}_outbound.png"
+            save_rgb_png(path, rgb)
+            files[f"{key}_outbound"] = str(path.relative_to(Path(self.args.bucket_root))).replace("\\", "/")
+        for key, rgb in previews.items():
+            path = bucket_dir / f"{key}_server_256.png"
+            save_rgb_png(path, rgb)
+            files[f"{key}_server_256"] = str(path.relative_to(Path(self.args.bucket_root))).replace("\\", "/")
+        record["camera_snapshots"] = files
+        record["camera_snapshot_at"] = now_iso()
+        return record
+
+    async def _prepare_bucket(self, label: str, random_deg: float, *, for_recording: bool) -> dict[str, Any] | None:
+        label = label.strip()
+        if not label:
+            self.runtime.update(status="Bucket blocked: label is empty.")
+            return None
+        record = self._load_bucket_record(label)
+        created = False
+        if record is None:
+            record = self._new_bucket_record(label, random_deg)
+            created = True
+            self.runtime.update(
+                status=f"Creating bucket '{label}'...",
+                detail=f"random={float(max(0.0, random_deg)):.1f} deg; generated arm init pose",
+            )
+        else:
+            self.runtime.update(
+                status=f"Loading bucket '{label}'...",
+                detail=f"success={record.get('counts', {}).get('success', 0)} failure={record.get('counts', {}).get('failure', 0)}",
+            )
+        target_pose = np.asarray(record["arm_init_pose_deg"], dtype=np.float32)
+        moved = await self._move_to_pose(target_pose, label=f"bucket {label}")
+        if not moved and not self.args.dry_run:
+            self.runtime.update(status=f"Bucket '{label}' prepare failed.", detail="arm did not reach its saved init pose")
+            return None
+        observation = self.robot.get_observation()
+        self._publish_live_camera(observation)
+        record = self._capture_bucket_snapshots(record, observation, overwrite=created or not record.get("camera_snapshots"))
+        record["last_prepared_at"] = now_iso()
+        record["last_prepare_for_recording"] = bool(for_recording)
+        self._write_bucket_record(record)
+        info = self._bucket_runtime_info(record)
+        self.runtime.update(
+            bucket_info=info,
+            init_config_id=label,
+            status=f"Bucket '{label}' ready.",
+            detail=(
+                f"success={info['success']} failure={info['failure']} "
+                f"random={info['random_value_deg']} deg"
+            ),
+        )
+        return record
+
+    def _update_bucket_after_episode(self, label: str, *, success: bool, episode_uid: str, episode_index: int) -> None:
+        record = self._load_bucket_record(label)
+        if record is None:
+            return
+        counts = record.setdefault("counts", {"success": 0, "failure": 0, "total_saved": 0})
+        counts["success" if success else "failure"] = int(counts.get("success" if success else "failure", 0)) + 1
+        counts["total_saved"] = int(counts.get("total_saved", 0)) + 1
+        record["last_episode_uid"] = episode_uid
+        record["last_episode_index"] = int(episode_index)
+        record["last_episode_success"] = bool(success)
+        self._write_bucket_record(record)
+        self.runtime.update(bucket_info=self._bucket_runtime_info(record))
+
+    async def _countdown_before_recording(self, seconds: float) -> None:
+        deadline = time.monotonic() + max(0.0, seconds)
+        while time.monotonic() < deadline and not self.runtime.stop_event.is_set():
+            remaining = max(0.0, deadline - time.monotonic())
+            with contextlib.suppress(Exception):
+                observation = self.robot.get_observation()
+                self._publish_live_camera(observation)
+                raw_arm = get_state(observation)
+                model_state, _ = raw_arm_to_model(raw_arm, self.args)
+                self.runtime.update(raw_arm=raw_arm, model_state=model_state)
+            self.runtime.update(status=f"Starting in {remaining:.1f}s...", detail="adjust object if needed, then hands off")
+            await asyncio.sleep(0.1)
+
     def _snapshot_calibrations(self) -> None:
         context_dir = Path(self.args.dataset_root) / "recording_context"
         for source in (
             Path(self.args.follower_calibration_dir) / f"{self.args.follower_id}.json",
-            Path(self.args.leader_calibration_dir) / f"{self.args.leader_id}.json",
+            None if self.args.no_leader else Path(self.args.leader_calibration_dir) / f"{self.args.leader_id}.json",
         ):
+            if source is None:
+                continue
             if source.is_file():
                 shutil.copy2(source, context_dir / source.name)
             else:
@@ -672,8 +913,12 @@ class RLCollectorWorker(threading.Thread):
                 self.runtime.update(chunk_step=0, status="Server cache reset.", detail="next policy tick sends a fresh observation")
             elif command == "home":
                 await self._move_to_pose(HOME_ARM, label="home")
-            elif command == "bucket_home":
-                await self._move_to_pose(bucket_pose(str(value)), label=f"bucket {value}")
+            elif command == "prepare_bucket":
+                await self._prepare_bucket(
+                    str(value.get("init_config_id") or DEFAULT_BUCKET_LABEL),
+                    float(value.get("bucket_random_deg") or 0.0),
+                    for_recording=False,
+                )
             elif command == "torque_off":
                 self.runtime.update(active=False, status="Disabling follower torque...")
                 await self._reset_server_cache()
@@ -698,8 +943,19 @@ class RLCollectorWorker(threading.Thread):
             self.runtime.update(status="Start ignored: prompt is empty.")
             return
         source = str(value.get("source") or "autonomous").strip()
-        init_config_id = str(value.get("init_config_id") or "A_mean_home").strip()
+        init_config_id = str(value.get("init_config_id") or DEFAULT_BUCKET_LABEL).strip()
+        bucket_random_deg = float(value.get("bucket_random_deg") or 0.0)
         initial_mode = str(value.get("control_mode") or ("teleop" if source in {"demo", "recovery"} else "policy"))
+        if initial_mode == "teleop" and self.leader is None:
+            self.runtime.update(
+                status="Start blocked: no leader arm is connected.",
+                detail="Run with -LeaderPort COMxx for demo/intervention teleop, or start in policy mode.",
+            )
+            return
+        bucket_record = await self._prepare_bucket(init_config_id, bucket_random_deg, for_recording=True)
+        if bucket_record is None:
+            return
+        await self._countdown_before_recording(self.args.bucket_start_countdown_s)
         episode_index = int(self.dataset.num_episodes)
         uid = f"{Path(self.args.dataset_root).name}_ep{episode_index:05d}"
         self.episode = EpisodeSession(
@@ -707,6 +963,10 @@ class RLCollectorWorker(threading.Thread):
             uid=uid,
             task=task,
             init_config_id=init_config_id,
+            bucket_label=init_config_id,
+            bucket_random_value_deg=float(bucket_record.get("random_value_deg", bucket_random_deg)),
+            arm_init_pose_deg=list(bucket_record.get("arm_init_pose_deg", HOME_ARM.tolist())),
+            bucket_record_path=str(Path(self.args.bucket_root) / str(bucket_record.get("bucket_dir", "")) / "bucket.json"),
             source=source,
             failure_mode=str(value.get("failure_mode") or ""),
             notes=str(value.get("notes") or ""),
@@ -716,6 +976,7 @@ class RLCollectorWorker(threading.Thread):
             task=task,
             init_config_id=init_config_id,
             source=source,
+            bucket_info=self._bucket_runtime_info(bucket_record),
             episode_index=episode_index,
             episode_uid=uid,
             episode_frame_count=0,
@@ -730,7 +991,15 @@ class RLCollectorWorker(threading.Thread):
             self._anchor_teleop()
             self.episode.set_human(True)
         await self._reset_server_cache()
-        self._event("episode_start", task=task, source=source, init_config_id=init_config_id, mode=initial_mode)
+        self._event(
+            "episode_start",
+            task=task,
+            source=source,
+            init_config_id=init_config_id,
+            bucket_label=init_config_id,
+            bucket_record_path=self.episode.bucket_record_path,
+            mode=initial_mode,
+        )
 
     async def _end_episode(self, success: bool, value: dict[str, Any]) -> None:
         if self.episode is None:
@@ -742,16 +1011,34 @@ class RLCollectorWorker(threading.Thread):
         self.episode.failure_mode = str(value.get("failure_mode") or self.episode.failure_mode or "")
         self.episode.notes = str(value.get("notes") or self.episode.notes or "")
         self.episode.finish_intervals()
-        self.runtime.update(active=False, status="Saving episode...", detail="LeRobot is encoding/writing the episode")
+        save_started = time.monotonic()
+        self.runtime.update(
+            active=False,
+            status="Saving episode...",
+            detail="LeRobot is encoding/writing the episode; exact progress is not exposed by LeRobot",
+            saving_episode_index=self.episode.episode_index,
+            saving_started_at=save_started,
+            saving_detail="save_episode() running",
+        )
         self.dataset.save_episode()
+        save_duration_s = time.monotonic() - save_started
         label = self._episode_label(success=success)
         append_jsonl(self.args.label_log, label)
+        self._update_bucket_after_episode(
+            self.episode.init_config_id,
+            success=success,
+            episode_uid=self.episode.uid,
+            episode_index=self.episode.episode_index,
+        )
         self._event("episode_saved", success=success, label=label)
         saved = self.runtime.snapshot()["saved_episodes"] + 1
         self.runtime.update(
             saved_episodes=saved,
             status=f"Saved episode {label['episode_index']} success={success}",
-            detail="Use reset/home or start the next bucket.",
+            detail=f"save took {save_duration_s:.1f}s. Use reset/home or start the next bucket.",
+            saving_episode_index=None,
+            saving_started_at=None,
+            saving_detail="",
             episode_index=None,
             episode_uid=None,
             episode_frame_count=0,
@@ -792,7 +1079,11 @@ class RLCollectorWorker(threading.Thread):
             "episode_index": self.episode.episode_index,
             "instruction": self.episode.task,
             "init_config_id": self.episode.init_config_id,
-            "init_bucket_pose_deg": bucket_pose(self.episode.init_config_id).tolist(),
+            "bucket_label": self.episode.bucket_label,
+            "bucket_random_value_deg": self.episode.bucket_random_value_deg,
+            "arm_init_pose_deg": self.episode.arm_init_pose_deg,
+            "init_bucket_pose_deg": self.episode.arm_init_pose_deg,
+            "bucket_record_path": self.episode.bucket_record_path,
             "source": self.episode.source,
             "success": bool(success),
             "failure_mode": "" if success else self.episode.failure_mode,
@@ -815,6 +1106,12 @@ class RLCollectorWorker(threading.Thread):
     async def _switch_mode(self, mode: str) -> None:
         if mode not in {"policy", "teleop"}:
             self.runtime.update(status=f"Unknown control mode: {mode}")
+            return
+        if mode == "teleop" and self.leader is None:
+            self.runtime.update(
+                status="Teleop blocked: no leader arm is connected.",
+                detail="Restart with -LeaderPort COMxx after Windows can see the leader serial port.",
+            )
             return
         current = self.runtime.snapshot()["control_mode"]
         if current == mode:
@@ -879,16 +1176,16 @@ class RLCollectorWorker(threading.Thread):
             response = unpackb(task.result())
         self._handle_policy_response(response, recompute=True, execute=False, label="human-background")
 
-    async def _move_to_pose(self, target_pose: np.ndarray, *, label: str) -> None:
+    async def _move_to_pose(self, target_pose: np.ndarray, *, label: str) -> bool:
         if self.args.dry_run:
             self.runtime.update(status=f"{label} blocked in dry-run.")
-            return
+            return True
         if self.runtime.snapshot()["active"]:
             self.runtime.update(status=f"{label} blocked while recording. End/discard the episode first.")
-            return
+            return False
         if not self.runtime.snapshot()["torque_enabled"]:
             self.runtime.update(status=f"{label} blocked: torque is off.")
-            return
+            return False
         self.runtime.update(status=f"Moving to {label} pose...", detail=np.round(target_pose, 1).tolist())
         deadline = time.monotonic() + self.args.home_timeout_s
         body_indices = list(range(JOINT_COUNT - 1)) if self.args.home_ignore_gripper else list(range(JOINT_COUNT))
@@ -900,13 +1197,14 @@ class RLCollectorWorker(threading.Thread):
             self.runtime.update(raw_arm=current, target_raw_arm=target_pose.copy(), detail=f"{label} max body error={error:.1f} deg")
             if error <= self.args.home_tolerance_deg:
                 self.runtime.update(status=f"{label} pose reached.", detail=f"max body error={error:.1f} deg")
-                return
+                return True
             target = current + np.clip(target_pose - current, -self.args.home_step_deg, self.args.home_step_deg)
             self.robot.send_action(vector_to_action(target))
             await asyncio.sleep(self.args.home_step_interval_s)
         current = get_state(self.robot.get_observation())
         error = float(np.max(np.abs(target_pose[body_indices] - current[body_indices])))
         self.runtime.update(status=f"{label} pose timed out.", detail=f"max body error={error:.1f} deg")
+        return False
 
     def _publish_live_camera(self, observation: dict[str, Any]) -> None:
         now = time.monotonic()
@@ -923,7 +1221,7 @@ class RLCollectorWorker(threading.Thread):
         observation = self.robot.get_observation()
         raw_arm = get_state(observation)
         model_state, _ = raw_arm_to_model(raw_arm, self.args)
-        leader = action_dict_to_vector(self.leader.get_action())
+        leader = None if self.leader is None else action_dict_to_vector(self.leader.get_action())
         self._publish_live_camera(observation)
         self.runtime.update(raw_arm=raw_arm, model_state=model_state, leader_arm=leader)
 
@@ -1003,6 +1301,8 @@ class RLCollectorWorker(threading.Thread):
         )
 
     def _teleop_target(self, raw_arm: np.ndarray) -> np.ndarray:
+        if self.leader is None:
+            raise RuntimeError("teleop requested but no leader arm is connected")
         leader_action = self.leader.get_action()
         leader = action_dict_to_vector(leader_action)
         if self.teleop_leader_anchor is None or self.teleop_follower_anchor is None:
@@ -1066,7 +1366,7 @@ class RLCollectorWorker(threading.Thread):
                     self._publish_live_camera(observation)
                     raw_arm = get_state(observation)
                     model_state, _ = raw_arm_to_model(raw_arm, self.args)
-                    leader = action_dict_to_vector(self.leader.get_action())
+                    leader = None if self.leader is None else action_dict_to_vector(self.leader.get_action())
                     self.runtime.update(raw_arm=raw_arm, model_state=model_state, leader_arm=leader)
         except Exception:
             if not receive_task.done():
@@ -1199,12 +1499,14 @@ class RLCollectorDashboard:
 
         self.task_var = tk.StringVar(value=runtime.args.task)
         self.bucket_var = tk.StringVar(value=runtime.args.init_config_id)
+        self.bucket_random_var = tk.StringVar(value=f"{runtime.args.bucket_random_deg:g}")
         self.source_var = tk.StringVar(value=runtime.args.source)
         self.mode_var = tk.StringVar(value=runtime.args.start_control_mode)
         self.failure_var = tk.StringVar(value="miss_grasp")
         self.notes_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Starting...")
         self.detail_var = tk.StringVar(value="")
+        self.bucket_info_var = tk.StringVar(value="Bucket: not prepared yet")
         self.joint_vars = {key: tk.StringVar(value="waiting") for key in ("raw", "model", "target", "action", "leader")}
         self.input_labels: dict[str, Any] = {}
         self._build()
@@ -1238,8 +1540,10 @@ class RLCollectorDashboard:
 
         cfg_row = ttk.Frame(header)
         cfg_row.pack(fill="x", pady=(0, 6))
-        ttk.Label(cfg_row, text="Bucket").pack(side="left")
-        ttk.Combobox(cfg_row, textvariable=self.bucket_var, values=list(INIT_BUCKETS), width=22).pack(side="left", padx=(4, 12))
+        ttk.Label(cfg_row, text="Bucket label").pack(side="left")
+        ttk.Entry(cfg_row, textvariable=self.bucket_var, width=22).pack(side="left", padx=(4, 8))
+        ttk.Label(cfg_row, text="New-bucket random +/-deg").pack(side="left")
+        ttk.Entry(cfg_row, textvariable=self.bucket_random_var, width=7).pack(side="left", padx=(4, 12))
         ttk.Label(cfg_row, text="Source").pack(side="left")
         ttk.Combobox(
             cfg_row,
@@ -1270,7 +1574,7 @@ class RLCollectorDashboard:
             ("Teleop mode", lambda: self._command("mode", "teleop")),
             ("Re-anchor teleop", lambda: self._command("reanchor")),
             ("Reset cache", lambda: self._command("reset")),
-            ("Move bucket pose", lambda: self._command("bucket_home", self.bucket_var.get())),
+            ("Prepare bucket", self._prepare_bucket),
             ("Home", lambda: self._command("home")),
             ("Torque off", lambda: self._command("torque_off")),
             ("Torque on", lambda: self._command("torque_on")),
@@ -1280,6 +1584,7 @@ class RLCollectorDashboard:
 
         ttk.Label(header, textvariable=self.status_var, font=("Consolas", 10, "bold")).pack(anchor="w")
         ttk.Label(header, textvariable=self.detail_var, font=("Consolas", 9)).pack(anchor="w")
+        ttk.Label(header, textvariable=self.bucket_info_var, font=("Consolas", 9)).pack(anchor="w")
 
         joint_box = ttk.LabelFrame(header, text="joint state / command", padding=6)
         joint_box.pack(fill="x", pady=(8, 0))
@@ -1330,6 +1635,12 @@ class RLCollectorDashboard:
         self.root.bind("<Control-p>", lambda _event: self._command("mode", "policy"))
         self.root.bind("<Control-t>", lambda _event: self._command("mode", "teleop"))
         self.root.bind("<Control-r>", lambda _event: self._command("reset"))
+        self.root.bind_all("<Left>", lambda _event: self._shortcut(lambda: self._end_episode(True)))
+        self.root.bind_all("<Right>", lambda _event: self._shortcut(lambda: self._end_episode(False)))
+        self.root.bind_all("<Up>", lambda _event: self._shortcut(lambda: self._command("mode", "teleop")))
+        self.root.bind_all("<Down>", lambda _event: self._shortcut(lambda: self._command("mode", "policy")))
+        self.root.bind_all("<F5>", lambda _event: self._shortcut(self._start_episode))
+        self.root.bind_all("<Delete>", lambda _event: self._shortcut(self._discard_episode))
 
     def _resize_scrollregion(self, _event=None) -> None:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -1340,15 +1651,30 @@ class RLCollectorDashboard:
     def _command(self, command: str, value: Any = None) -> None:
         self.runtime.command_queue.put((command, value))
 
+    def _shortcut(self, callback) -> str:
+        callback()
+        return "break"
+
+    def _bucket_random_deg(self) -> float:
+        try:
+            return max(0.0, float(self.bucket_random_var.get().strip()))
+        except ValueError:
+            self.bucket_random_var.set(f"{self.runtime.args.bucket_random_deg:g}")
+            return float(self.runtime.args.bucket_random_deg)
+
     def _episode_payload(self) -> dict[str, Any]:
         return {
             "task": self.task_var.get().strip(),
             "init_config_id": self.bucket_var.get().strip(),
+            "bucket_random_deg": self._bucket_random_deg(),
             "source": self.source_var.get().strip(),
             "control_mode": self.mode_var.get().strip(),
             "failure_mode": self.failure_var.get().strip(),
             "notes": self.notes_var.get().strip(),
         }
+
+    def _prepare_bucket(self) -> None:
+        self.runtime.command_queue.put(("prepare_bucket", self._episode_payload()))
 
     def _start_episode(self) -> None:
         self.runtime.command_queue.put(("start_episode", self._episode_payload()))
@@ -1420,6 +1746,11 @@ class RLCollectorDashboard:
             f"{state} | {snap['control_mode'].upper()} | torque={'ON' if snap['torque_enabled'] else 'OFF'} | "
             f"saved={snap['saved_episodes']} discarded={snap['discarded_episodes']} | {snap['status']}"
         )
+        if snap["saving_started_at"] is not None:
+            elapsed = time.monotonic() - snap["saving_started_at"]
+            self.status_var.set(
+                f"{self.status_var.get()} | saving ep={snap['saving_episode_index']} elapsed={elapsed:.1f}s"
+            )
         age = "never"
         if snap["last_observation_sent_at"] is not None:
             age = f"{time.monotonic() - snap['last_observation_sent_at']:.2f}s ago"
@@ -1428,6 +1759,20 @@ class RLCollectorDashboard:
             f"episode={ep} | bucket={snap['init_config_id']} source={snap['source']} | "
             f"last server obs={age} | chunk {snap['chunk_step']}/{snap['action_steps']} | {snap['detail']}"
         )
+        bucket_info = snap["bucket_info"] or {}
+        if bucket_info:
+            pose = bucket_info.get("arm_init_pose_deg")
+            pose_text = "n/a" if pose is None else np.round(np.asarray(pose, dtype=np.float32), 1).tolist()
+            self.bucket_info_var.set(
+                f"Bucket '{bucket_info.get('label')}': success={bucket_info.get('success', 0)} "
+                f"failure={bucket_info.get('failure', 0)} total={bucket_info.get('total_saved', 0)} | "
+                f"random={bucket_info.get('random_value_deg')} deg | arm_init={pose_text} | {bucket_info.get('record_path', '')}"
+            )
+        else:
+            self.bucket_info_var.set(
+                f"Bucket '{self.bucket_var.get().strip() or DEFAULT_BUCKET_LABEL}': not prepared. "
+                f"For new bucket, random +/-deg={self._bucket_random_deg():.1f} (reference: 3 deg; 0 = exact home)."
+            )
         self.joint_vars["raw"].set(format_joint_vector(snap["raw_arm"]))
         self.joint_vars["leader"].set(format_joint_vector(snap["leader_arm"]))
         self.joint_vars["model"].set(format_joint_vector(snap["model_state"]))
@@ -1478,6 +1823,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--policy-ckpt-label", default="")
     parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--dataset-repo-id", required=True)
+    parser.add_argument("--bucket-root", required=True)
     parser.add_argument("--dataset-fps", type=int, default=15)
     parser.add_argument("--action-fps", type=float, default=15.0)
     parser.add_argument("--expected-action-steps", type=int, default=32)
@@ -1489,6 +1835,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--leader-port", default="COM22")
     parser.add_argument("--follower-id", default="fenghao_so101_follower")
     parser.add_argument("--leader-id", default="fenghao_so101_leader")
+    parser.add_argument("--no-leader", action="store_true", help="Run policy/autonomous collection without connecting a leader arm.")
     parser.add_argument(
         "--follower-calibration-dir",
         default=str(Path.home() / ".cache" / "huggingface" / "lerobot" / "calibration" / "robots" / "so101_follower"),
@@ -1509,7 +1856,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fixed-exposure", type=float, default=-6.0)
     parser.add_argument("--wrist-exposure", type=float, default=-6.0)
 
-    parser.add_argument("--init-config-id", default="A_mean_home")
+    parser.add_argument("--init-config-id", default=DEFAULT_BUCKET_LABEL)
+    parser.add_argument("--bucket-random-deg", type=float, default=DEFAULT_BUCKET_RANDOM_DEG)
+    parser.add_argument("--bucket-start-countdown-s", type=float, default=2.0)
     parser.add_argument("--source", default="autonomous")
     parser.add_argument("--start-control-mode", choices=["policy", "teleop"], default="policy")
     parser.add_argument("--absolute-teleop", action="store_true", help="Use leader absolute angles; default is safer relative takeover.")
@@ -1547,6 +1896,12 @@ def parse_args() -> argparse.Namespace:
         parser.error("wrist-crop-right-px must be in [0, width-1]")
     if args.dashboard_fps <= 0 or args.dashboard_camera_fps <= 0:
         parser.error("dashboard fps values must be positive")
+    if args.bucket_random_deg < 0:
+        parser.error("bucket-random-deg must be non-negative")
+    if args.bucket_start_countdown_s < 0:
+        parser.error("bucket-start-countdown-s must be non-negative")
+    args.dataset_root = str(Path(args.dataset_root).expanduser().resolve())
+    args.bucket_root = str(Path(args.bucket_root).expanduser().resolve())
     return args
 
 
