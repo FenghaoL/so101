@@ -1,0 +1,71 @@
+{
+  "format": "g05_so101_rl_collection/v1",
+  "created_at": "2026-07-01T10:50:44.691186+08:00",
+  "task_default": "Pick up the white block.",
+  "dataset_root": "D:\\workspace\\Manipulation\\so101\\so101_data\\g05_rl_raw\\so101_g05_rl_pick_white_v1\\20260701_105023",
+  "dataset_repo_id": "fenghao/so101_g05_rl_pick_white_v1_20260701_105023",
+  "dataset_fps": 15,
+  "action_fps": 15.0,
+  "server": "ws://127.0.0.1:8765",
+  "policy_checkpoint_label": "g05_ar_sft_pick_white_20260701",
+  "camera_contract": {
+    "fixed_camera_index": 2,
+    "wrist_camera_index": 0,
+    "fixed_crop_right_px": 160,
+    "wrist_crop_right_px": 0,
+    "stored_fixed_shape": [
+      480,
+      480,
+      3
+    ],
+    "stored_wrist_shape": [
+      480,
+      640,
+      3
+    ],
+    "server_slots": {
+      "fixed": "exterior",
+      "wrist": "wrist_right",
+      "wrist_left": "zero_padded"
+    }
+  },
+  "joint_frame": {
+    "raw_dataset": "LeRobot calibrated degrees",
+    "model_frame_formula": "q_model = [1,-1,1,1,1,1] * q_raw + [0,90,90,0,0,0]",
+    "joint_order": [
+      "shoulder_pan.pos",
+      "shoulder_lift.pos",
+      "elbow_flex.pos",
+      "wrist_flex.pos",
+      "wrist_roll.pos",
+      "gripper.pos"
+    ]
+  },
+  "control_modes": {
+    "policy": "execute G0.5 right_arm actions",
+    "teleop": "relative leader takeover; follower target = follower_anchor + leader_delta"
+  },
+  "bucket_contract": {
+    "meaning": "bucket label describes object/block placement, not a fixed arm pose class",
+    "bucket_root": "D:\\workspace\\Manipulation\\so101\\so101_data\\g05_rl_buckets\\so101_g05_rl_pick_white_v1",
+    "new_bucket_pose_rule": "arm_init_pose_deg = HOME_ARM + uniform(-random_deg, random_deg) * BUCKET_NOISE_WEIGHTS",
+    "home_arm_deg": [
+      3.0999999046325684,
+      -34.29999923706055,
+      31.5,
+      55.900001525878906,
+      -12.300000190734863,
+      13.399999618530273
+    ],
+    "noise_weights": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      0.699999988079071,
+      0.0
+    ],
+    "default_random_deg": 3.0,
+    "start_behavior": "on Start episode, move to saved bucket arm_init_pose, count down, then record"
+  }
+}

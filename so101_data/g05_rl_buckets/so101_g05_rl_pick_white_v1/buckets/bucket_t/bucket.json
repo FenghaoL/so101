@@ -1,0 +1,47 @@
+{
+  "format": "g05_so101_rl_bucket/v1",
+  "label": "bucket_t",
+  "bucket_dir": "buckets/bucket_t",
+  "created_at": "2026-07-01T11:37:36.692291+08:00",
+  "updated_at": "2026-07-01T13:01:43.504750+08:00",
+  "random_value_deg": 4.0,
+  "noise_deg": [
+    2.3019323348999023,
+    3.138996124267578,
+    -1.2499464750289917,
+    2.9438138008117676,
+    2.1458849906921387,
+    -0.0
+  ],
+  "home_arm_deg": [
+    3.0999999046325684,
+    -34.29999923706055,
+    31.5,
+    55.900001525878906,
+    -12.300000190734863,
+    13.399999618530273
+  ],
+  "arm_init_pose_deg": [
+    5.401932239532471,
+    -31.16100311279297,
+    30.25005340576172,
+    58.843814849853516,
+    -10.154115676879883,
+    13.399999618530273
+  ],
+  "counts": {
+    "success": 0,
+    "failure": 0,
+    "total_saved": 0
+  },
+  "camera_snapshots": {
+    "exterior_outbound": "buckets/bucket_t/exterior_outbound.png",
+    "wrist_right_outbound": "buckets/bucket_t/wrist_right_outbound.png",
+    "exterior_server_256": "buckets/bucket_t/exterior_server_256.png",
+    "wrist_right_server_256": "buckets/bucket_t/wrist_right_server_256.png"
+  },
+  "notes": "Bucket label represents object/block placement. This directory stores metadata and reference images only, not episode data.",
+  "camera_snapshot_at": "2026-07-01T11:37:36.892597+08:00",
+  "last_prepared_at": "2026-07-01T13:01:43.504750+08:00",
+  "last_prepare_for_recording": true
+}

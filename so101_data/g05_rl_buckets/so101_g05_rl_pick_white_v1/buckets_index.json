@@ -1,0 +1,229 @@
+{
+  "format": "g05_so101_rl_bucket_index/v1",
+  "created_at": "2026-07-01T10:28:25.666215+08:00",
+  "updated_at": "2026-07-01T13:28:52.754668+08:00",
+  "bucket_root": "D:\\workspace\\Manipulation\\so101\\so101_data\\g05_rl_buckets\\so101_g05_rl_pick_white_v1",
+  "buckets": {
+    "bucket_001": {
+      "bucket_dir": "buckets/bucket_001",
+      "record": "buckets/bucket_001/bucket.json",
+      "success": 3,
+      "failure": 4,
+      "total_saved": 7,
+      "arm_init_pose_deg": [
+        2.218905448913574,
+        -32.412315368652344,
+        30.506521224975586,
+        54.595645904541016,
+        -13.00629711151123,
+        13.399999618530273
+      ],
+      "random_value_deg": 3.0,
+      "updated_at": "2026-07-01T11:04:08.687501+08:00"
+    },
+    "bucket_002": {
+      "bucket_dir": "buckets/bucket_002",
+      "record": "buckets/bucket_002/bucket.json",
+      "success": 4,
+      "failure": 4,
+      "total_saved": 8,
+      "arm_init_pose_deg": [
+        3.0999999046325684,
+        -34.29999923706055,
+        31.5,
+        55.900001525878906,
+        -12.300000190734863,
+        13.399999618530273
+      ],
+      "random_value_deg": 0.0,
+      "updated_at": "2026-07-01T11:25:31.536428+08:00"
+    },
+    "bucket_003": {
+      "bucket_dir": "buckets/bucket_003",
+      "record": "buckets/bucket_003/bucket.json",
+      "success": 4,
+      "failure": 3,
+      "total_saved": 7,
+      "arm_init_pose_deg": [
+        2.3345816135406494,
+        -32.740970611572266,
+        29.947954177856445,
+        56.15397262573242,
+        -12.181117057800293,
+        13.399999618530273
+      ],
+      "random_value_deg": 2.0,
+      "updated_at": "2026-07-01T11:36:08.472553+08:00"
+    },
+    "bucket_t": {
+      "bucket_dir": "buckets/bucket_t",
+      "record": "buckets/bucket_t/bucket.json",
+      "success": 0,
+      "failure": 0,
+      "total_saved": 0,
+      "arm_init_pose_deg": [
+        5.401932239532471,
+        -31.16100311279297,
+        30.25005340576172,
+        58.843814849853516,
+        -10.154115676879883,
+        13.399999618530273
+      ],
+      "random_value_deg": 4.0,
+      "updated_at": "2026-07-01T13:01:43.504750+08:00"
+    },
+    "bucket_test_1": {
+      "bucket_dir": "buckets/bucket_test_1",
+      "record": "buckets/bucket_test_1/bucket.json",
+      "success": 0,
+      "failure": 0,
+      "total_saved": 0,
+      "arm_init_pose_deg": [
+        5.011435031890869,
+        -28.28236198425293,
+        39.46231460571289,
+        55.03742218017578,
+        -15.498858451843262,
+        13.399999618530273
+      ],
+      "random_value_deg": 10.0,
+      "updated_at": "2026-07-01T11:38:04.169100+08:00"
+    },
+    "bucket_4": {
+      "bucket_dir": "buckets/bucket_4",
+      "record": "buckets/bucket_4/bucket.json",
+      "success": 0,
+      "failure": 0,
+      "total_saved": 0,
+      "arm_init_pose_deg": [
+        0.5466330051422119,
+        -28.50792694091797,
+        23.915536880493164,
+        46.49007034301758,
+        -9.850513458251953,
+        13.399999618530273
+      ],
+      "random_value_deg": 10.0,
+      "updated_at": "2026-07-01T11:38:19.386777+08:00"
+    },
+    "bucket_004": {
+      "bucket_dir": "buckets/bucket_004",
+      "record": "buckets/bucket_004/bucket.json",
+      "success": 5,
+      "failure": 3,
+      "total_saved": 8,
+      "arm_init_pose_deg": [
+        -1.8229660987854004,
+        -40.46455383300781,
+        35.49226379394531,
+        56.54738235473633,
+        -9.400455474853516,
+        13.399999618530273
+      ],
+      "random_value_deg": 10.0,
+      "updated_at": "2026-07-01T12:11:54.607546+08:00"
+    },
+    "bucket_005": {
+      "bucket_dir": "buckets/bucket_005",
+      "record": "buckets/bucket_005/bucket.json",
+      "success": 3,
+      "failure": 3,
+      "total_saved": 6,
+      "arm_init_pose_deg": [
+        3.425828695297241,
+        -28.754135131835938,
+        37.76500701904297,
+        63.55683135986328,
+        -12.738393783569336,
+        13.399999618530273
+      ],
+      "random_value_deg": 10.0,
+      "updated_at": "2026-07-01T12:23:25.760834+08:00"
+    },
+    "bucket_006": {
+      "bucket_dir": "buckets/bucket_006",
+      "record": "buckets/bucket_006/bucket.json",
+      "success": 3,
+      "failure": 3,
+      "total_saved": 6,
+      "arm_init_pose_deg": [
+        -0.6915483474731445,
+        -33.35295486450195,
+        35.41545486450195,
+        55.0544319152832,
+        -12.69143009185791,
+        13.399999618530273
+      ],
+      "random_value_deg": 10.0,
+      "updated_at": "2026-07-01T12:37:05.588988+08:00"
+    },
+    "bucket_007": {
+      "bucket_dir": "buckets/bucket_007",
+      "record": "buckets/bucket_007/bucket.json",
+      "success": 0,
+      "failure": 1,
+      "total_saved": 1,
+      "arm_init_pose_deg": [
+        5.703534126281738,
+        -29.671859741210938,
+        24.85736846923828,
+        55.90095901489258,
+        -5.694429874420166,
+        13.399999618530273
+      ],
+      "random_value_deg": 15.0,
+      "updated_at": "2026-07-01T13:07:25.438195+08:00"
+    },
+    "bucket_test": {
+      "bucket_dir": "buckets/bucket_test",
+      "record": "buckets/bucket_test/bucket.json",
+      "success": 0,
+      "failure": 0,
+      "total_saved": 0,
+      "arm_init_pose_deg": [
+        -4.95183801651001,
+        -24.267900466918945,
+        28.39520263671875,
+        60.34956741333008,
+        -2.2393226623535156,
+        13.399999618530273
+      ],
+      "random_value_deg": 15.0,
+      "updated_at": "2026-07-01T13:01:50.785203+08:00"
+    },
+    "bucket_008": {
+      "bucket_dir": "buckets/bucket_008",
+      "record": "buckets/bucket_008/bucket.json",
+      "success": 3,
+      "failure": 3,
+      "total_saved": 6,
+      "arm_init_pose_deg": [
+        12.582317352294922,
+        -33.167144775390625,
+        28.091957092285156,
+        49.74519348144531,
+        -7.064212322235107,
+        13.399999618530273
+      ],
+      "random_value_deg": 15.0,
+      "updated_at": "2026-07-01T13:18:43.476139+08:00"
+    },
+    "bucket_009": {
+      "bucket_dir": "buckets/bucket_009",
+      "record": "buckets/bucket_009/bucket.json",
+      "success": 3,
+      "failure": 3,
+      "total_saved": 6,
+      "arm_init_pose_deg": [
+        -0.780463695526123,
+        -37.01523971557617,
+        34.290550231933594,
+        61.440940856933594,
+        -20.69321060180664,
+        13.399999618530273
+      ],
+      "random_value_deg": 15.0,
+      "updated_at": "2026-07-01T13:28:52.752589+08:00"
+    }
+  }
+}

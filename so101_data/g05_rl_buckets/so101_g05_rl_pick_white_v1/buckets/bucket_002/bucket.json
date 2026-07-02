@@ -1,0 +1,50 @@
+{
+  "format": "g05_so101_rl_bucket/v1",
+  "label": "bucket_002",
+  "bucket_dir": "buckets/bucket_002",
+  "created_at": "2026-07-01T11:05:22.827096+08:00",
+  "updated_at": "2026-07-01T11:25:31.536428+08:00",
+  "random_value_deg": 0.0,
+  "noise_deg": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "home_arm_deg": [
+    3.0999999046325684,
+    -34.29999923706055,
+    31.5,
+    55.900001525878906,
+    -12.300000190734863,
+    13.399999618530273
+  ],
+  "arm_init_pose_deg": [
+    3.0999999046325684,
+    -34.29999923706055,
+    31.5,
+    55.900001525878906,
+    -12.300000190734863,
+    13.399999618530273
+  ],
+  "counts": {
+    "success": 4,
+    "failure": 4,
+    "total_saved": 8
+  },
+  "camera_snapshots": {
+    "exterior_outbound": "buckets/bucket_002/exterior_outbound.png",
+    "wrist_right_outbound": "buckets/bucket_002/wrist_right_outbound.png",
+    "exterior_server_256": "buckets/bucket_002/exterior_server_256.png",
+    "wrist_right_server_256": "buckets/bucket_002/wrist_right_server_256.png"
+  },
+  "notes": "Bucket label represents object/block placement. This directory stores metadata and reference images only, not episode data.",
+  "camera_snapshot_at": "2026-07-01T11:05:23.389154+08:00",
+  "last_prepared_at": "2026-07-01T11:24:52.673694+08:00",
+  "last_prepare_for_recording": true,
+  "last_episode_uid": "20260701_110907_ep00006",
+  "last_episode_index": 6,
+  "last_episode_success": true
+}

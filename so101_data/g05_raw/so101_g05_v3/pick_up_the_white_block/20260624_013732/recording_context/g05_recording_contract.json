@@ -1,0 +1,39 @@
+﻿{
+    "created_at":  "2026-06-24T01:41:33.0364950+08:00",
+    "task":  "pick up the white block",
+    "dataset_fps":  15,
+    "camera_capture_fps":  30,
+    "raw_camera_fields":  {
+                              "fixed":  "observation.images.fixed",
+                              "wrist":  "observation.images.wrist"
+                          },
+    "live_model_slots":  {
+                             "fixed":  "exterior",
+                             "wrist":  "wrist_right",
+                             "wrist_left":  "zero_padded"
+                         },
+    "live_image_contract":  {
+                                "fixed_crop_right_px":  91,
+                                "wrist_crop_right_px":  0
+                            },
+    "requested_camera_controls":  {
+                                      "2":  {
+                                                "auto_exposure":  0.25,
+                                                "exposure":  -6
+                                            },
+                                      "0":  {
+                                                "auto_exposure":  0.25,
+                                                "exposure":  -6
+                                            }
+                                  },
+    "joint_recording_frame":  "LeRobot calibrated degrees",
+    "required_model_frame":  "signs*[pan,lift,elbow,wrist_flex,wrist_roll,gripper]+[0,90,90,0,0,0], signs=[1,-1,1,1,1,1]",
+    "follower":  {
+                     "id":  "fenghao_so101_follower",
+                     "port":  "COM24"
+                 },
+    "leader":  {
+                   "id":  "fenghao_so101_leader",
+                   "port":  "COM22"
+               }
+}
